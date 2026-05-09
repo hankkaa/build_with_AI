@@ -1,15 +1,13 @@
 import { useState, useEffect } from 'react'
 import './index.css'
 import SpendChart from './SpendChart'
-import { api } from './api'
+import { api, YEAR, MONTH } from './api'
 
 const BRAND = '#E8572A'
 const S = {
   card: { background: '#fff', borderRadius: 12, border: '0.5px solid rgba(0,0,0,0.08)', padding: 16 },
-  muted: { color: '#6b6b6b' },
 }
 
-// ── 공통 ──────────────────────────────────────────────────
 function LoadingBox() {
   return <div style={{ ...S.card, fontSize: 13, color: '#6b6b6b' }}>불러오는 중...</div>
 }
@@ -40,39 +38,52 @@ function BottomNav({ active, onChange }) {
 
 // ── MAIN SCREEN ───────────────────────────────────────────
 /*
-GET /api/insights 응답:
-{
-  "curr_total": 342000,
-  "diff_pct": 12,
-  "saveable": 8700,
-  "expiry_count": 2,
-  "top_category": "통신",
-  "top_category_pct": 38
-}
+GET /users/{id}/spending/summary?year=&month= 응답:
+{ "year": 2025, "month": 5, "by_category": {"통신": 130000, ...}, "total": 342000, "vs_last_month": 12.5 }
 
-GET /api/subscriptions/expiry 응답:
-{
-  "service_name": "SKT 5GX 슬림 요금제",
-  "d_day": 14,
-  "alert_message": "월 ₩8,700 절약 가능한 플랜이 있어요"
-}
+GET /users/{id}/subscriptions/ 응답:
+[
+  { "id": 1, "name": "SKT 5GX 슬림", "category": "통신", "monthly_cost": 55000, "next_billing_date": "2025-05-23", "is_active": true },
+  ...
+]
 */
 function MainScreen({ onSwap }) {
-  const [insights, setInsights] = useState(null)
-  const [expiry, setExpiry] = useState(null)
-  const [loadingInsights, setLoadingInsights] = useState(true)
-  const [loadingExpiry, setLoadingExpiry] = useState(true)
+  const [spendData, setSpendData] = useState(null)
+  const [subscriptions, setSubscriptions] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
-    api.getInsights()
-      .then(setInsights)
-      .catch(() => setInsights(null))
-      .finally(() => setLoadingInsights(false))
-    api.getExpiryInfo()
-      .then(setExpiry)
-      .catch(() => setExpiry(null))
-      .finally(() => setLoadingExpiry(false))
+    Promise.all([api.getSpendCurr(), api.getSubscriptions()])
+      .then(([s, subs]) => { setSpendData(s); setSubscriptions(subs) })
+      .catch(setError)
+      .finally(() => setLoading(false))
   }, [])
+
+  // 만기가 가장 가까운 구독 찾기
+  const nextExpiry = subscriptions
+    .filter(s => s.next_billing_date)
+    .sort((a, b) => new Date(a.next_billing_date) - new Date(b.next_billing_date))[0]
+
+  const dDay = nextExpiry
+    ? Math.ceil((new Date(nextExpiry.next_billing_date) - new Date()) / (1000 * 60 * 60 * 24))
+    : null
+
+  const total = spendData?.total || 0
+  const diffPct = spendData?.vs_last_month
+  const isUp = diffPct > 0
+
+  // 주 지출 카테고리
+  const byCategory = spendData?.by_category || {}
+  const topCategory = Object.entries(byCategory).sort((a, b) => b[1] - a[1])[0]
+  const topCategoryPct = topCategory && total > 0
+    ? Math.round((topCategory[1] / total) * 100)
+    : 0
+
+  // 절약 가능 금액 (가장 비싼 구독의 10% 추정)
+  const saveable = subscriptions.length > 0
+    ? Math.round(Math.max(...subscriptions.map(s => s.monthly_cost || 0)) * 0.1)
+    : 0
 
   return (
     <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -81,55 +92,70 @@ function MainScreen({ onSwap }) {
           <h1 style={{ fontSize: 22, fontWeight: 500 }}>SWAP</h1>
           <div style={{ width: 34, height: 34, borderRadius: '50%', background: BRAND, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 13, fontWeight: 500 }}>김</div>
         </div>
-        <div style={{ fontSize: 12, color: '#6b6b6b', paddingBottom: 16 }}>2025년 5월 · 스마트 구독 관리</div>
+        <div style={{ fontSize: 12, color: '#6b6b6b', paddingBottom: 16 }}>{YEAR}년 {MONTH}월 · 스마트 구독 관리</div>
       </div>
 
-      <div style={{ margin: '16px 20px 0' }}>
-        {loadingExpiry ? <LoadingBox /> : expiry ? (
-          <>
-            <div style={{ background: '#1A1A2E', borderRadius: 12, padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#F7F6F2' }}>
-              <div>
-                <div style={{ fontSize: 11, opacity: 0.6 }}>다음 만기</div>
-                <div style={{ fontSize: 15, fontWeight: 500 }}>{expiry.service_name}</div>
-              </div>
-              <div style={{ background: BRAND, color: '#fff', fontSize: 13, fontWeight: 500, padding: '6px 12px', borderRadius: 20 }}>D-{expiry.d_day}</div>
-            </div>
-            {expiry.alert_message && (
-              <div style={{ marginTop: 12, background: '#FDF0EB', border: '0.5px solid rgba(232,87,42,0.3)', borderRadius: 8, padding: '12px 14px', display: 'flex', gap: 10 }}>
-                <span style={{ fontSize: 18, color: BRAND, flexShrink: 0 }}>🔔</span>
+      {loading ? (
+        <div style={{ margin: '16px 20px 0' }}><LoadingBox /></div>
+      ) : error ? (
+        <div style={{ margin: '16px 20px 0' }}><ErrorBox /></div>
+      ) : (
+        <>
+          {nextExpiry && (
+            <div style={{ margin: '16px 20px 0' }}>
+              <div style={{ background: '#1A1A2E', borderRadius: 12, padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#F7F6F2' }}>
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: BRAND }}>요금제 만기 후 재분석 완료</div>
-                  <div style={{ fontSize: 12, color: '#6b6b6b', marginTop: 2 }}>{expiry.alert_message}</div>
+                  <div style={{ fontSize: 11, opacity: 0.6 }}>다음 결제일</div>
+                  <div style={{ fontSize: 15, fontWeight: 500 }}>{nextExpiry.name}</div>
+                  <div style={{ fontSize: 11, opacity: 0.6, marginTop: 2 }}>{nextExpiry.next_billing_date}</div>
+                </div>
+                <div style={{ background: BRAND, color: '#fff', fontSize: 13, fontWeight: 500, padding: '6px 12px', borderRadius: 20 }}>
+                  D-{dDay}
                 </div>
               </div>
-            )}
-          </>
-        ) : null}
-      </div>
+            </div>
+          )}
 
-      <div style={{ padding: '16px 20px 0' }}>
-        <SpendChart />
-      </div>
+          <div style={{ padding: '16px 20px 0' }}>
+            <SpendChart />
+          </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 10, padding: '16px 20px 0' }}>
-        {loadingInsights
-          ? [1,2,3,4].map(i => <div key={i} style={{ ...S.card, padding: 12, height: 72, background: '#f5f5f5' }} />)
-          : insights
-            ? [
-                { label: '이번 달 지출',       val: `₩${insights.curr_total.toLocaleString()}원`,  sub: `${insights.diff_pct > 0 ? '↑' : '↓'} ${Math.abs(insights.diff_pct)}% 전월 대비`, subColor: insights.diff_pct > 0 ? '#E24B4A' : '#1D9E75' },
-                { label: '절약 가능 금액',      val: `₩${insights.saveable.toLocaleString()}원`,    sub: '↓ 월 절감 예상',    subColor: '#1D9E75' },
-                { label: '구독 만기 수',        val: `${insights.expiry_count}건`,                  sub: '이번 달 이내',      subColor: '#BA7517' },
-                { label: '주 지출 카테고리',    val: insights.top_category,                         sub: `전체의 ${insights.top_category_pct}%`, subColor: '#6b6b6b' },
-              ].map((c) => (
-                <div key={c.label} style={{ ...S.card, padding: 12 }}>
-                  <div style={{ fontSize: 11, color: '#6b6b6b', marginBottom: 4 }}>{c.label}</div>
-                  <div style={{ fontSize: 17, fontWeight: 500 }}>{c.val}</div>
-                  <div style={{ fontSize: 11, marginTop: 2, color: c.subColor }}>{c.sub}</div>
-                </div>
-              ))
-            : null
-        }
-      </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 10, padding: '16px 20px 0' }}>
+            {[
+              {
+                label: '이번 달 지출',
+                val: `₩${total.toLocaleString()}원`,
+                sub: diffPct != null ? `${isUp ? '↑' : '↓'} ${Math.abs(Math.round(diffPct))}% 전월 대비` : '전월 데이터 없음',
+                subColor: diffPct != null ? (isUp ? '#E24B4A' : '#1D9E75') : '#6b6b6b',
+              },
+              {
+                label: '절약 가능 금액',
+                val: saveable > 0 ? `₩${saveable.toLocaleString()}원` : '-',
+                sub: '↓ 월 절감 예상',
+                subColor: '#1D9E75',
+              },
+              {
+                label: '구독 수',
+                val: `${subscriptions.length}건`,
+                sub: `활성 구독`,
+                subColor: '#BA7517',
+              },
+              {
+                label: '주 지출 카테고리',
+                val: topCategory ? topCategory[0] : '-',
+                sub: topCategory ? `전체의 ${topCategoryPct}%` : '데이터 없음',
+                subColor: '#6b6b6b',
+              },
+            ].map((c) => (
+              <div key={c.label} style={{ ...S.card, padding: 12 }}>
+                <div style={{ fontSize: 11, color: '#6b6b6b', marginBottom: 4 }}>{c.label}</div>
+                <div style={{ fontSize: 17, fontWeight: 500 }}>{c.val}</div>
+                <div style={{ fontSize: 11, marginTop: 2, color: c.subColor }}>{c.sub}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <div style={{ padding: '16px 20px' }}>
         <button onClick={onSwap} style={{ width: '100%', background: BRAND, color: '#fff', border: 'none', borderRadius: 12, padding: 16, fontSize: 15, fontWeight: 500, cursor: 'pointer' }}>
@@ -142,11 +168,7 @@ function MainScreen({ onSwap }) {
 
 // ── HISTORY SCREEN ────────────────────────────────────────
 /*
-GET /api/swap/history 응답:
-[
-  { "icon": "📱", "bg": "#E8F5E9", "name": "SKT → LG U+ 알뜰폰", "date": "2025.04.01 변경", "save": "-₩12,000/월" },
-  { "icon": "💳", "bg": "#FFF3E0", "name": "신한 → 카카오뱅크 카드", "date": "2025.03.15 변경", "save": "-₩8,400/월" }
-]
+GET /users/{id}/subscriptions/ 응답 배열 그대로 사용
 */
 function HistoryScreen() {
   const [items, setItems] = useState([])
@@ -154,29 +176,43 @@ function HistoryScreen() {
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    api.getSwapHistory()
+    api.getSubscriptions()
       .then(setItems)
       .catch(setError)
       .finally(() => setLoading(false))
   }, [])
 
+  const CATEGORY_ICONS = { '통신': '📱', '카드': '💳', 'OTT': '🎬', '보험': '🛡', '기타': '📦' }
+  const CATEGORY_BG    = { '통신': '#E8F5E9', '카드': '#FFF3E0', 'OTT': '#FCE4EC', '보험': '#E3F2FD', '기타': '#F5F5F5' }
+
   return (
     <div style={{ flex: 1, overflowY: 'auto' }}>
       <div style={{ padding: '20px 20px 0', background: '#fff' }}>
-        <h1 style={{ fontSize: 22, fontWeight: 500 }}>SWAP 내역</h1>
-        <div style={{ fontSize: 12, color: '#6b6b6b', paddingBottom: 16 }}>나의 절약 기록</div>
+        <h1 style={{ fontSize: 22, fontWeight: 500 }}>구독 내역</h1>
+        <div style={{ fontSize: 12, color: '#6b6b6b', paddingBottom: 16 }}>현재 활성 구독 목록</div>
       </div>
       <div style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {loading && <LoadingBox />}
         {error && <ErrorBox />}
+        {!loading && !error && items.length === 0 && (
+          <div style={{ ...S.card, fontSize: 13, color: '#6b6b6b', textAlign: 'center', padding: 24 }}>
+            등록된 구독이 없어요
+          </div>
+        )}
         {!loading && !error && items.map((item) => (
-          <div key={item.name} style={{ ...S.card, display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ width: 40, height: 40, borderRadius: 10, background: item.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{item.icon}</div>
+          <div key={item.id} style={{ ...S.card, display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: CATEGORY_BG[item.category] || '#F5F5F5', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>
+              {CATEGORY_ICONS[item.category] || '📦'}
+            </div>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 14, fontWeight: 500 }}>{item.name}</div>
-              <div style={{ fontSize: 12, color: '#6b6b6b', marginTop: 2 }}>{item.date}</div>
+              <div style={{ fontSize: 12, color: '#6b6b6b', marginTop: 2 }}>
+                {item.next_billing_date ? `다음 결제: ${item.next_billing_date}` : '결제일 없음'}
+              </div>
             </div>
-            <div style={{ fontSize: 13, fontWeight: 500, color: '#1D9E75' }}>{item.save}</div>
+            <div style={{ fontSize: 13, fontWeight: 500, color: BRAND }}>
+              ₩{(item.monthly_cost || 0).toLocaleString()}원/월
+            </div>
           </div>
         ))}
       </div>
@@ -197,7 +233,6 @@ function StepDots({ step }) {
   )
 }
 
-// STEP 1
 function Step1({ swapType, onSelect }) {
   const options = [
     { key: 'mobile',    icon: '📡', label: '요금제',   sub: '통신사 · 알뜰폰' },
@@ -223,92 +258,50 @@ function Step1({ swapType, onSelect }) {
   )
 }
 
-// STEP 2
 /*
-GET /api/usage 응답:
-{
-  "data_used_gb": 19, "data_total_gb": 30,
-  "call_used_min": 245, "call_total": "무제한",
-  "sms_used": 48, "sms_total": "무제한"
-}
-
-GET /api/plans/mobile 응답:
-[
-  { "id": "a", "icon": "📡", "bg": "#E8F4FD", "name": "LG U+ 알뜰폰 20G", "detail": "데이터 20GB · 음성 무제한", "price_monthly": 19800, "recommend": true },
-  { "id": "b", "icon": "📶", "bg": "#F3E5F5", "name": "KT 알뜰 슬림 20G",  "detail": "데이터 20GB · 음성 200분",  "price_monthly": 17600, "recommend": false }
-]
-
-GET /api/spending/categories 응답:
-[
-  { "icon": "🍔", "bg": "#E8F5E9", "name": "음식·배달", "amount": 87000, "pct": 25, "has_card_benefit": false },
-  { "icon": "⛽", "bg": "#FFF3E0", "name": "교통·주유",  "amount": 62000, "pct": 18, "has_card_benefit": false },
-  { "icon": "🛒", "bg": "#FCE4EC", "name": "마트·쇼핑",  "amount": 54000, "pct": 16, "has_card_benefit": true }
-]
+GET /users/{id}/subscriptions/ 에서 통신 카테고리 필터링
+GET /users/{id}/spending/summary 에서 카테고리별 지출 사용
 */
 function Step2({ swapType, selectedPlan, onSelectPlan }) {
-  const [usage, setUsage] = useState(null)
-  const [plans, setPlans] = useState([])
-  const [categories, setCategories] = useState([])
+  const [subscriptions, setSubscriptions] = useState([])
+  const [spendData, setSpendData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
   useEffect(() => {
-  let cancelled = false
-
-  if (swapType === 'mobile') {
+    if (!swapType) return
     setLoading(true)
-    Promise.all([api.getUsage(), api.getMobilePlans()])
-      .then(([u, p]) => {
-        if (!cancelled) { setUsage(u); setPlans(p) }
-      })
-      .catch((e) => { if (!cancelled) setError(e) })
-      .finally(() => { if (!cancelled) setLoading(false) })
-  } else if (swapType === 'card') {
-    setLoading(true)
-    api.getCardCategories()
-      .then((data) => { if (!cancelled) setCategories(data) })
-      .catch((e) => { if (!cancelled) setError(e) })
-      .finally(() => { if (!cancelled) setLoading(false) })
-  }
-
-  return () => { cancelled = true }
-}, [swapType])
+    Promise.all([api.getSubscriptions(), api.getSpendCurr()])
+      .then(([subs, spend]) => { setSubscriptions(subs); setSpendData(spend) })
+      .catch(setError)
+      .finally(() => setLoading(false))
+  }, [swapType])
 
   if (loading) return <LoadingBox />
   if (error) return <ErrorBox />
 
+  const total = spendData?.total || 0
+  const byCategory = spendData?.by_category || {}
+
   if (swapType === 'mobile') {
-    const bars = usage ? [
-      { label: '데이터 사용량', cur: `${usage.data_used_gb}GB`,  max: `${usage.data_total_gb}GB`, pct: Math.round((usage.data_used_gb / usage.data_total_gb) * 100), color: BRAND },
-      { label: '통화',         cur: `${usage.call_used_min}분`, max: usage.call_total,            pct: 30, color: '#1D9E75' },
-      { label: '문자',         cur: `${usage.sms_used}건`,      max: usage.sms_total,             pct: 15, color: '#BA7517' },
-    ] : []
+    const telecomSubs = subscriptions.filter(s => s.category === '통신')
     return (
       <div>
-        <div style={{ fontSize: 16, fontWeight: 500, marginBottom: 4 }}>현재 사용 패턴 분석</div>
-        <div style={{ fontSize: 13, color: '#6b6b6b', marginBottom: 16 }}>지난달 데이터를 기반으로 맞춤 요금제를 찾아요</div>
-        {bars.map((b) => (
-          <div key={b.label} style={{ marginBottom: 14 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#6b6b6b', marginBottom: 6 }}>
-              <span>{b.label}</span><span>{b.cur} / {b.max}</span>
-            </div>
-            <div style={{ height: 8, background: 'rgba(0,0,0,0.08)', borderRadius: 4, overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${b.pct}%`, background: b.color, borderRadius: 4 }} />
-            </div>
-          </div>
-        ))}
-        <div style={{ fontSize: 13, color: '#6b6b6b', marginBottom: 12 }}>✦ 분석 결과: 20GB 이하 요금제로도 충분해요</div>
+        <div style={{ fontSize: 16, fontWeight: 500, marginBottom: 4 }}>현재 통신 구독</div>
+        <div style={{ fontSize: 13, color: '#6b6b6b', marginBottom: 16 }}>변경할 요금제를 선택해요</div>
+        {telecomSubs.length === 0 && (
+          <div style={{ ...S.card, fontSize: 13, color: '#6b6b6b', textAlign: 'center', padding: 24 }}>등록된 통신 구독이 없어요</div>
+        )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {plans.map((p) => (
-            <div key={p.id} onClick={() => onSelectPlan(p.id)}
-              style={{ ...S.card, display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', borderColor: selectedPlan === p.id ? BRAND : 'rgba(0,0,0,0.08)', background: selectedPlan === p.id ? '#FDF0EB' : '#fff' }}>
-              <div style={{ width: 40, height: 40, borderRadius: 10, background: p.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 }}>{p.icon}</div>
+          {telecomSubs.map((s) => (
+            <div key={s.id} onClick={() => onSelectPlan(s.id)}
+              style={{ ...S.card, display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', borderColor: selectedPlan === s.id ? BRAND : 'rgba(0,0,0,0.08)', background: selectedPlan === s.id ? '#FDF0EB' : '#fff' }}>
+              <div style={{ width: 40, height: 40, borderRadius: 10, background: '#E8F5E9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>📡</div>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 14, fontWeight: 500 }}>{p.name}</div>
-                <div style={{ fontSize: 12, color: '#6b6b6b', marginTop: 2 }}>{p.detail}</div>
-                <div style={{ fontSize: 13, color: BRAND, fontWeight: 500, marginTop: 2 }}>₩{p.price_monthly.toLocaleString()}원/월</div>
+                <div style={{ fontSize: 14, fontWeight: 500 }}>{s.name}</div>
+                <div style={{ fontSize: 12, color: '#6b6b6b', marginTop: 2 }}>다음 결제: {s.next_billing_date || '-'}</div>
+                <div style={{ fontSize: 13, color: BRAND, fontWeight: 500, marginTop: 2 }}>₩{(s.monthly_cost || 0).toLocaleString()}원/월</div>
               </div>
-              {p.recommend && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: '#E8572A22', color: BRAND, fontWeight: 500 }}>추천</span>}
             </div>
           ))}
         </div>
@@ -320,42 +313,35 @@ function Step2({ swapType, selectedPlan, onSelectPlan }) {
     <div>
       <div style={{ fontSize: 16, fontWeight: 500, marginBottom: 4 }}>지출 패턴 분석</div>
       <div style={{ fontSize: 13, color: '#6b6b6b', marginBottom: 16 }}>이번 달 주요 지출 카테고리예요</div>
-      {categories.map((c) => (
-        <div key={c.name} style={{ ...S.card, display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-          <div style={{ width: 40, height: 40, borderRadius: 10, background: c.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>{c.icon}</div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 14, fontWeight: 500 }}>{c.name}</div>
-            <div style={{ fontSize: 12, color: '#6b6b6b', marginTop: 2 }}>월 평균 ₩{c.amount.toLocaleString()}</div>
-            <div style={{ fontSize: 13, color: BRAND, fontWeight: 500, marginTop: 2 }}>전체의 {c.pct}%</div>
+      {Object.entries(byCategory).length === 0 && (
+        <div style={{ ...S.card, fontSize: 13, color: '#6b6b6b', textAlign: 'center', padding: 24 }}>지출 데이터가 없어요</div>
+      )}
+      {Object.entries(byCategory)
+        .sort((a, b) => b[1] - a[1])
+        .map(([cat, amount]) => (
+          <div key={cat} style={{ ...S.card, display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: '#FFF3E0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>💳</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>{cat}</div>
+              <div style={{ fontSize: 12, color: '#6b6b6b', marginTop: 2 }}>월 ₩{amount.toLocaleString()}</div>
+              <div style={{ fontSize: 13, color: BRAND, fontWeight: 500, marginTop: 2 }}>
+                전체의 {total > 0 ? Math.round((amount / total) * 100) : 0}%
+              </div>
+            </div>
           </div>
-          {c.has_card_benefit && <span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, background: '#E8572A22', color: BRAND, fontWeight: 500 }}>할인 카드 있음</span>}
-        </div>
-      ))}
+        ))}
     </div>
   )
 }
 
-// STEP 3
-/*
-GET /api/swap/benefits?type=mobile 응답:
-{
-  "monthly_save": 8700,
-  "annual_save": 104400,
-  "items": [
-    { "title": "요금제 변경 절감", "sub": "SKT 5GX → LG U+ 알뜰 20G", "save": "-₩8,700", "type": "ok" },
-    { "title": "OTT 번들 혜택",   "sub": "넷플릭스 제휴 할인 포함",    "save": "-₩3,900", "type": "ok" },
-    { "title": "기기 할부금",     "sub": "위약금 없음 (약정 만료)",     "save": "₩0",      "type": "info" }
-  ]
-}
-*/
 function Step3({ swapType }) {
-  const save    = swapType === 'card' ? '₩12,400' : '₩8,700'
-  const annual  = swapType === 'card' ? '₩148,800' : '₩104,400'
-  const items   = swapType === 'mobile'
+  const save   = swapType === 'card' ? '₩12,400' : '₩8,700'
+  const annual = swapType === 'card' ? '₩148,800' : '₩104,400'
+  const items  = swapType === 'mobile'
     ? [
-        { title: '요금제 변경 절감', sub: 'SKT 5GX → LG U+ 알뜰 20G', save: '-₩8,700', ok: true },
-        { title: 'OTT 번들 혜택',   sub: '넷플릭스 제휴 할인 포함',    save: '-₩3,900', ok: true },
-        { title: '기기 할부금',     sub: '위약금 없음 (약정 만료)',     save: '₩0',      ok: false },
+        { title: '요금제 변경 절감', sub: '현재 요금제 → 알뜰폰 추천 요금제', save: '-₩8,700', ok: true },
+        { title: 'OTT 번들 혜택',   sub: '넷플릭스 제휴 할인 포함',           save: '-₩3,900', ok: true },
+        { title: '기기 할부금',     sub: '위약금 여부 확인 필요',              save: '확인 필요', ok: false },
       ]
     : [
         { title: '카카오페이 카드', sub: '배달·편의점 10% 할인',  save: '-₩8,700', ok: true },
@@ -384,17 +370,16 @@ function Step3({ swapType }) {
   )
 }
 
-// STEP 4
 function Step4({ swapType, onDone }) {
   const steps = swapType === 'mobile'
     ? [
-        { title: 'LG U+ 알뜰몰 접속', desc: '앱 또는 홈페이지에서 회원가입' },
+        { title: '알뜰폰 사이트 접속', desc: '앱 또는 홈페이지에서 회원가입' },
         { title: '번호이동 신청',       desc: '기존 유심 그대로 사용 가능' },
         { title: '개통 완료',           desc: '영업일 1-2일 이내 개통' },
       ]
     : [
-        { title: '카카오페이 카드 신청', desc: '카카오페이 앱 → 금융 → 카드' },
-        { title: '기존 카드 해지',       desc: '새 카드 수령 후 해지 권장' },
+        { title: '카드 신청',    desc: '카드사 앱 또는 홈페이지에서 신청' },
+        { title: '기존 카드 해지', desc: '새 카드 수령 후 해지 권장' },
       ]
   return (
     <div style={{ textAlign: 'center', paddingTop: 16 }}>
@@ -415,7 +400,7 @@ function Step4({ swapType, onDone }) {
         ))}
       </div>
       <button onClick={onDone} style={{ width: '100%', background: BRAND, color: '#fff', border: 'none', borderRadius: 8, padding: 14, fontSize: 15, fontWeight: 500, cursor: 'pointer', marginBottom: 8 }}>
-        {swapType === 'mobile' ? 'LG U+ 바로가기 ↗' : '카카오페이 카드 신청 ↗'}
+        {swapType === 'mobile' ? '알뜰폰 바로가기 ↗' : '카드 신청 바로가기 ↗'}
       </button>
       <button onClick={onDone} style={{ width: '100%', background: 'none', color: '#1a1a1a', border: '0.5px solid rgba(0,0,0,0.15)', borderRadius: 8, padding: 13, fontSize: 14, cursor: 'pointer' }}>
         나중에 하기
@@ -424,7 +409,6 @@ function Step4({ swapType, onDone }) {
   )
 }
 
-// ── SWAP SCREEN ───────────────────────────────────────────
 function SwapScreen({ onBack }) {
   const [step, setStep] = useState(1)
   const [swapType, setSwapType] = useState(null)
